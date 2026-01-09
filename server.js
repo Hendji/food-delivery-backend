@@ -205,3 +205,49 @@ app.listen(PORT, () => {
     testConnection();
   }
 });
+
+// Функция инициализации базы данных
+async function initializeDatabase() {
+  try {
+    if (!pool) {
+      console.log('⚠️ Нет подключения к базе, пропускаем инициализацию');
+      return;
+    }
+
+    const client = await pool.connect();
+
+    // Проверяем существование таблиц
+    const checkTables = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+    `);
+
+    console.log(`📊 Найдено таблиц: ${checkTables.rows.length}`);
+
+    // Если таблиц нет, создаем их
+    if (checkTables.rows.length === 0) {
+      console.log('🔧 Инициализируем базу данных...');
+
+      // Здесь можно выполнить SQL из init.sql
+      // Для простоты создадим только users если нет
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(100) NOT NULL,
+          email VARCHAR(100) UNIQUE NOT NULL,
+          password VARCHAR(255) NOT NULL,
+          phone VARCHAR(20),
+          avatar_url TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      console.log('✅ База данных инициализирована');
+    }
+
+    client.release();
+  } catch (error) {
+    console.error('❌ Ошибка инициализации базы:', error.message);
+  }
+}
