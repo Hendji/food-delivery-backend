@@ -1,0 +1,17 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm install"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+
+[[services]]
+name = "food-delivery-api"
+port = 8000
+protocol = "http"
+
+[environments.production.variables]
+NODE_ENV = "production"
+PORT = "8000"
