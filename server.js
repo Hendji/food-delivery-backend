@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
@@ -10,7 +13,7 @@ const PORT = process.env.PORT || 8000;
 app.use(cors());
 app.use(express.json());
 
-// Функция для логирования (полезно для дебага)
+// Функция для логирования
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);
 }
@@ -38,7 +41,7 @@ async function initializeDatabase() {
       ssl: {
         rejectUnauthorized: false
       },
-      max: 5, // максимальное количество клиентов в пуле
+      max: 5,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000
     });
@@ -66,17 +69,22 @@ async function createTablesIfNotExist() {
   try {
     const client = await pool.connect();
 
-    // Таблица пользователей
+    // Таблица пользователей с полем подтверждения email
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
-                                         id SERIAL PRIMARY KEY,
-                                         name VARCHAR(100) NOT NULL,
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
         email VARCHAR(100) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         phone VARCHAR(20),
         avatar_url TEXT,
+        is_email_verified BOOLEAN DEFAULT false,
+        email_verification_token VARCHAR(255),
+        email_verification_expires TIMESTAMP,
+        password_reset_token VARCHAR(255),
+        password_reset_expires TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+      )
     `);
 
     log('✅ Таблица users создана/проверена');
@@ -84,8 +92,8 @@ async function createTablesIfNotExist() {
     // Таблица ресторанов
     await client.query(`
       CREATE TABLE IF NOT EXISTS restaurants (
-                                               id SERIAL PRIMARY KEY,
-                                               name VARCHAR(100) NOT NULL,
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
         description TEXT,
         image_url TEXT,
         rating DECIMAL(3,2) DEFAULT 0.0,
@@ -93,7 +101,7 @@ async function createTablesIfNotExist() {
         delivery_price VARCHAR(50),
         categories TEXT[],
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+      )
     `);
 
     log('✅ Таблица restaurants создана/проверена');
@@ -158,28 +166,114 @@ async function createTablesIfNotExist() {
 
 // ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
-// Функция для получения ID пользователя из токена (упрощенная версия)
+// Генерация JWT токена
+function generateToken(userId) {
+  return jwt.sign(
+      { userId },
+      process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+      { expiresIn: '7d' }
+  );
+}
+
+// Верификация JWT токена
+function verifyToken(token) {
+  try {
+    return jwt.verify(
+        token,
+        process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+    );
+  } catch (error) {
+    return null;
+  }
+}
+
+// Получение ID пользователя из токена
 function getUserIdFromToken(req) {
-  // В реальном приложении здесь должна быть проверка JWT токена
-  // Для упрощения будем использовать заголовок X-User-Id
-  const userId = req.headers['x-user-id'];
-
-  if (userId && !isNaN(parseInt(userId))) {
-    return parseInt(userId);
-  }
-
-  // Если заголовка нет, используем токен из Authorization
   const token = req.headers.authorization?.replace('Bearer ', '');
-  if (token && token.startsWith('token_')) {
-    // Извлекаем ID из токена (в демо-режиме)
-    const tokenParts = token.split('_');
-    if (tokenParts.length > 1 && !isNaN(parseInt(tokenParts[1]))) {
-      return parseInt(tokenParts[1]);
-    }
+
+  if (!token) {
+    return null;
   }
 
-  // Если ничего не найдено, возвращаем null
-  return null;
+  const decoded = verifyToken(token);
+  return decoded ? decoded.userId : null;
+}
+
+// Хеширование пароля
+async function hashPassword(password) {
+  const saltRounds = 10;
+  return await bcrypt.hash(password, saltRounds);
+}
+
+// Проверка пароля
+async function comparePassword(password, hashedPassword) {
+  return await bcrypt.compare(password, hashedPassword);
+}
+
+// Генерация случайного токена
+function generateRandomToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// Отправка email (мок-функция, в продакшене подключите реальный сервис)
+async function sendEmail(to, subject, html) {
+  log(`📧 Мок-отправка email на ${to}`);
+  log(`📨 Тема: ${subject}`);
+  log(`📝 Тело: ${html.substring(0, 100)}...`);
+
+  // В реальном приложении здесь должен быть код отправки email
+  // Например, через Nodemailer, SendGrid, Mailgun и т.д.
+
+  // Для демо просто логируем
+  return true;
+}
+
+// Отправка email с подтверждением
+async function sendVerificationEmail(email, token) {
+  const verificationUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+
+  const html = `
+    <h1>Подтвердите ваш email</h1>
+    <p>Для завершения регистрации нажмите на ссылку ниже:</p>
+    <a href="${verificationUrl}">Подтвердить email</a>
+    <p>Или скопируйте эту ссылку в браузер:</p>
+    <p>${verificationUrl}</p>
+    <p>Ссылка действительна в течение 24 часов.</p>
+  `;
+
+  return await sendEmail(email, 'Подтверждение email - Food Delivery', html);
+}
+
+// Отправка email для сброса пароля
+async function sendPasswordResetEmail(email, token) {
+  const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+
+  const html = `
+    <h1>Сброс пароля</h1>
+    <p>Вы запросили сброс пароля. Для установки нового пароля нажмите на ссылку ниже:</p>
+    <a href="${resetUrl}">Сбросить пароль</a>
+    <p>Или скопируйте эту ссылку в браузер:</p>
+    <p>${resetUrl}</p>
+    <p>Ссылка действительна в течение 1 часа.</p>
+    <p>Если вы не запрашивали сброс пароля, проигнорируйте это письмо.</p>
+  `;
+
+  return await sendEmail(email, 'Сброс пароля - Food Delivery', html);
+}
+
+// Проверка аутентификации (middleware)
+function authenticate(req, res, next) {
+  const userId = getUserIdFromToken(req);
+
+  if (!userId) {
+    return res.status(401).json({
+      success: false,
+      error: 'Требуется авторизация'
+    });
+  }
+
+  req.userId = userId;
+  next();
 }
 
 // ===== МАРШРУТЫ API =====
@@ -193,6 +287,10 @@ app.get('/', (req, res) => {
       health: '/health',
       register: '/register (POST)',
       login: '/login (POST)',
+      verifyEmail: '/verify-email (GET)',
+      resendVerification: '/resend-verification (POST)',
+      forgotPassword: '/forgot-password (POST)',
+      resetPassword: '/reset-password (POST)',
       user: '/users/me (GET)',
       stats: '/users/me/stats (GET)',
       orders: '/users/me/orders (GET)'
@@ -224,6 +322,23 @@ app.post('/register', async (req, res) => {
       });
     }
 
+    // Проверка email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный email'
+      });
+    }
+
+    // Проверка пароля
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Пароль должен содержать минимум 6 символов'
+      });
+    }
+
     // Если база подключена, сохраняем в базу
     if (isDatabaseConnected && pool) {
       try {
@@ -240,22 +355,32 @@ app.post('/register', async (req, res) => {
           });
         }
 
+        // Хешируем пароль
+        const hashedPassword = await hashPassword(password);
+
+        // Генерируем токен для подтверждения email
+        const verificationToken = generateRandomToken();
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 часа
+
         // Создаем нового пользователя
         const newUser = await pool.query(
-            `INSERT INTO users (name, email, password, phone)
-             VALUES ($1, $2, $3, $4)
-               RETURNING id, name, email, phone, avatar_url, created_at`,
-            [name, email, password, phone || null]
+            `INSERT INTO users (name, email, password, phone, email_verification_token, email_verification_expires)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, name, email, phone, avatar_url, is_email_verified, created_at`,
+            [name, email, hashedPassword, phone || null, verificationToken, verificationExpires]
         );
 
         const user = newUser.rows[0];
 
-        // Генерируем токен с ID пользователя
-        const token = `token_${user.id}_${Date.now()}`;
+        // Отправляем email с подтверждением
+        await sendVerificationEmail(email, verificationToken);
+
+        // Генерируем JWT токен
+        const token = generateToken(user.id);
 
         res.json({
           success: true,
-          message: 'Регистрация успешна',
+          message: 'Регистрация успешна. Проверьте ваш email для подтверждения.',
           access_token: token,
           user: {
             id: user.id,
@@ -263,18 +388,36 @@ app.post('/register', async (req, res) => {
             email: user.email,
             phone: user.phone,
             avatarUrl: user.avatar_url,
+            isEmailVerified: user.is_email_verified,
             createdAt: user.created_at
           }
         });
 
       } catch (dbError) {
         log(`❌ Ошибка базы при регистрации: ${dbError.message}`);
-        // Если ошибка базы, возвращаем мок-данные
-        return sendMockRegistration(res, name, email, phone);
+        return res.status(500).json({
+          success: false,
+          error: 'Ошибка сервера'
+        });
       }
     } else {
       // Мок-режим
-      sendMockRegistration(res, name, email, phone);
+      const token = generateToken(Date.now());
+
+      res.json({
+        success: true,
+        message: 'Регистрация успешна (тестовый режим)',
+        access_token: token,
+        user: {
+          id: Date.now(),
+          name,
+          email,
+          phone: phone || null,
+          avatarUrl: null,
+          isEmailVerified: false,
+          createdAt: new Date().toISOString()
+        }
+      });
     }
 
   } catch (error) {
@@ -286,22 +429,302 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Функция для мок-регистрации
-function sendMockRegistration(res, name, email, phone) {
-  res.json({
-    success: true,
-    message: 'Регистрация успешна (тестовый режим)',
-    access_token: 'mock_token_' + Date.now(),
-    user: {
-      id: Date.now(),
-      name,
-      email,
-      phone: phone || null,
-      avatarUrl: null,
-      createdAt: new Date().toISOString()
+// Подтверждение email
+app.get('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        error: 'Токен подтверждения отсутствует'
+      });
     }
-  });
-}
+
+    log(`🔍 Подтверждение email по токену: ${token}`);
+
+    if (isDatabaseConnected && pool) {
+      // Находим пользователя по токену
+      const userResult = await pool.query(
+          `SELECT id, email_verification_expires 
+         FROM users 
+         WHERE email_verification_token = $1 AND is_email_verified = false`,
+          [token]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Неверный или устаревший токен подтверждения'
+        });
+      }
+
+      const user = userResult.rows[0];
+
+      // Проверяем срок действия токена
+      if (user.email_verification_expires < new Date()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Срок действия токена истек'
+        });
+      }
+
+      // Обновляем статус подтверждения
+      await pool.query(
+          `UPDATE users 
+         SET is_email_verified = true, 
+             email_verification_token = NULL,
+             email_verification_expires = NULL
+         WHERE id = $1`,
+          [user.id]
+      );
+
+      log(`✅ Email подтвержден для пользователя ${user.id}`);
+
+      // Перенаправляем на страницу успеха
+      res.json({
+        success: true,
+        message: 'Email успешно подтвержден!'
+      });
+
+    } else {
+      // Мок-режим
+      res.json({
+        success: true,
+        message: 'Email подтвержден (тестовый режим)'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка подтверждения email: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Повторная отправка письма с подтверждением
+app.post('/resend-verification', authenticate, async (req, res) => {
+  try {
+    const userId = req.userId;
+
+    if (isDatabaseConnected && pool) {
+      // Получаем пользователя
+      const userResult = await pool.query(
+          `SELECT id, email, is_email_verified 
+         FROM users 
+         WHERE id = $1`,
+          [userId]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Пользователь не найден'
+        });
+      }
+
+      const user = userResult.rows[0];
+
+      if (user.is_email_verified) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email уже подтвержден'
+        });
+      }
+
+      // Генерируем новый токен
+      const verificationToken = generateRandomToken();
+      const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      // Обновляем токен в базе
+      await pool.query(
+          `UPDATE users 
+         SET email_verification_token = $1, 
+             email_verification_expires = $2
+         WHERE id = $3`,
+          [verificationToken, verificationExpires, userId]
+      );
+
+      // Отправляем email
+      await sendVerificationEmail(user.email, verificationToken);
+
+      res.json({
+        success: true,
+        message: 'Письмо с подтверждением отправлено повторно'
+      });
+
+    } else {
+      // Мок-режим
+      res.json({
+        success: true,
+        message: 'Письмо с подтверждением отправлено (тестовый режим)'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка повторной отправки подтверждения: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Запрос на сброс пароля
+app.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Введите email'
+      });
+    }
+
+    log(`🔑 Запрос сброса пароля для: ${email}`);
+
+    if (isDatabaseConnected && pool) {
+      // Проверяем существование пользователя
+      const userResult = await pool.query(
+          'SELECT id, email FROM users WHERE email = $1',
+          [email]
+      );
+
+      if (userResult.rows.length === 0) {
+        // Для безопасности не раскрываем, что пользователя нет
+        log(`⚠️ Пользователь с email ${email} не найден, но отправляем успешный ответ`);
+        return res.json({
+          success: true,
+          message: 'Если пользователь с таким email существует, инструкции отправлены'
+        });
+      }
+
+      const user = userResult.rows[0];
+
+      // Генерируем токен для сброса пароля
+      const resetToken = generateRandomToken();
+      const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 час
+
+      // Сохраняем токен в базе
+      await pool.query(
+          `UPDATE users 
+         SET password_reset_token = $1, 
+             password_reset_expires = $2
+         WHERE id = $3`,
+          [resetToken, resetExpires, user.id]
+      );
+
+      // Отправляем email
+      await sendPasswordResetEmail(email, resetToken);
+
+      res.json({
+        success: true,
+        message: 'Инструкции по сбросу пароля отправлены на email'
+      });
+
+    } else {
+      // Мок-режим
+      res.json({
+        success: true,
+        message: 'Инструкции по сбросу пароля отправлены (тестовый режим)'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка запроса сброса пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Сброс пароля
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Токен и новый пароль обязательны'
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Пароль должен содержать минимум 6 символов'
+      });
+    }
+
+    log(`🔑 Сброс пароля по токену: ${token}`);
+
+    if (isDatabaseConnected && pool) {
+      // Находим пользователя по токену
+      const userResult = await pool.query(
+          `SELECT id, password_reset_expires 
+         FROM users 
+         WHERE password_reset_token = $1`,
+          [token]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Неверный или устаревший токен сброса пароля'
+        });
+      }
+
+      const user = userResult.rows[0];
+
+      // Проверяем срок действия токена
+      if (user.password_reset_expires < new Date()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Срок действия токена истек'
+        });
+      }
+
+      // Хешируем новый пароль
+      const hashedPassword = await hashPassword(password);
+
+      // Обновляем пароль и очищаем токен
+      await pool.query(
+          `UPDATE users 
+         SET password = $1, 
+             password_reset_token = NULL,
+             password_reset_expires = NULL
+         WHERE id = $2`,
+          [hashedPassword, user.id]
+      );
+
+      log(`✅ Пароль обновлен для пользователя ${user.id}`);
+
+      res.json({
+        success: true,
+        message: 'Пароль успешно изменен'
+      });
+
+    } else {
+      // Мок-режим
+      res.json({
+        success: false,
+        error: 'Сброс пароля не доступен в тестовом режиме'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка сброса пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
 
 // Вход пользователя
 app.post('/login', async (req, res) => {
@@ -321,8 +744,8 @@ app.post('/login', async (req, res) => {
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
-            'SELECT * FROM users WHERE email = $1 AND password = $2',
-            [email, password]
+            'SELECT * FROM users WHERE email = $1',
+            [email]
         );
 
         if (userResult.rows.length === 0) {
@@ -334,8 +757,27 @@ app.post('/login', async (req, res) => {
 
         const user = userResult.rows[0];
 
-        // Генерируем токен с ID пользователя
-        const token = `token_${user.id}_${Date.now()}`;
+        // Проверяем пароль
+        const isPasswordValid = await comparePassword(password, user.password);
+
+        if (!isPasswordValid) {
+          return res.status(401).json({
+            success: false,
+            error: 'Неверный email или пароль'
+          });
+        }
+
+        // Проверяем подтверждение email (опционально)
+        if (!user.is_email_verified && process.env.REQUIRE_EMAIL_VERIFICATION === 'true') {
+          return res.status(403).json({
+            success: false,
+            error: 'Подтвердите ваш email перед входом',
+            requiresVerification: true
+          });
+        }
+
+        // Генерируем JWT токен
+        const token = generateToken(user.id);
 
         res.json({
           success: true,
@@ -347,18 +789,36 @@ app.post('/login', async (req, res) => {
             email: user.email,
             phone: user.phone,
             avatarUrl: user.avatar_url,
+            isEmailVerified: user.is_email_verified,
             createdAt: user.created_at
           }
         });
 
       } catch (dbError) {
         log(`❌ Ошибка базы при входе: ${dbError.message}`);
-        // Если ошибка базы, возвращаем мок-данные
-        return sendMockLogin(res, email);
+        return res.status(500).json({
+          success: false,
+          error: 'Ошибка сервера'
+        });
       }
     } else {
       // Мок-режим
-      sendMockLogin(res, email);
+      const token = generateToken(1);
+
+      res.json({
+        success: true,
+        message: 'Вход выполнен успешно (тестовый режим)',
+        access_token: token,
+        user: {
+          id: 1,
+          name: 'Иван Иванов',
+          email: email,
+          phone: '+7 (999) 123-45-67',
+          avatarUrl: null,
+          isEmailVerified: true,
+          createdAt: new Date().toISOString()
+        }
+      });
     }
 
   } catch (error) {
@@ -370,39 +830,92 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Функция для мок-входа
-function sendMockLogin(res, email) {
-  res.json({
-    success: true,
-    message: 'Вход выполнен успешно (тестовый режим)',
-    access_token: 'mock_token_1_' + Date.now(), // ID = 1 для демо
-    user: {
-      id: 1,
-      name: 'Иван Иванов',
-      email: email,
-      phone: '+7 (999) 123-45-67',
-      avatarUrl: null,
-      createdAt: new Date().toISOString()
-    }
-  });
-}
-
-// Получение данных текущего пользователя
-app.get('/users/me', async (req, res) => {
+// Изменение пароля (авторизованный пользователь)
+app.post('/change-password', authenticate, async (req, res) => {
   try {
-    const userId = getUserIdFromToken(req);
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.userId;
 
-    if (!userId) {
-      return res.status(401).json({
-        error: 'Требуется авторизация'
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Текущий и новый пароль обязательны'
       });
     }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Новый пароль должен содержать минимум 6 символов'
+      });
+    }
+
+    if (isDatabaseConnected && pool) {
+      // Получаем текущий пароль пользователя
+      const userResult = await pool.query(
+          'SELECT password FROM users WHERE id = $1',
+          [userId]
+      );
+
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Пользователь не найден'
+        });
+      }
+
+      const user = userResult.rows[0];
+
+      // Проверяем текущий пароль
+      const isPasswordValid = await comparePassword(currentPassword, user.password);
+
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          error: 'Неверный текущий пароль'
+        });
+      }
+
+      // Хешируем новый пароль
+      const hashedPassword = await hashPassword(newPassword);
+
+      // Обновляем пароль
+      await pool.query(
+          'UPDATE users SET password = $1 WHERE id = $2',
+          [hashedPassword, userId]
+      );
+
+      res.json({
+        success: true,
+        message: 'Пароль успешно изменен'
+      });
+
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Изменение пароля не доступно в тестовом режиме'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка изменения пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Получение данных текущего пользователя
+app.get('/users/me', authenticate, async (req, res) => {
+  try {
+    const userId = req.userId;
 
     // Если база подключена, получаем данные из БД
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
-            'SELECT id, name, email, phone, avatar_url, created_at FROM users WHERE id = $1',
+            'SELECT id, name, email, phone, avatar_url, is_email_verified, created_at FROM users WHERE id = $1',
             [userId]
         );
 
@@ -420,6 +933,7 @@ app.get('/users/me', async (req, res) => {
           email: user.email,
           phone: user.phone,
           avatarUrl: user.avatar_url,
+          isEmailVerified: user.is_email_verified,
           createdAt: user.created_at
         });
 
@@ -437,6 +951,7 @@ app.get('/users/me', async (req, res) => {
         email: 'ivan@example.com',
         phone: '+7 (999) 123-45-67',
         avatarUrl: null,
+        isEmailVerified: true,
         createdAt: new Date().toISOString()
       });
     }
@@ -448,15 +963,9 @@ app.get('/users/me', async (req, res) => {
 });
 
 // Статистика заказов
-app.get('/users/me/stats', async (req, res) => {
+app.get('/users/me/stats', authenticate, async (req, res) => {
   try {
-    const userId = getUserIdFromToken(req);
-
-    if (!userId) {
-      return res.status(401).json({
-        error: 'Требуется авторизация'
-      });
-    }
+    const userId = req.userId;
 
     log(`📊 Запрос статистики для пользователя ${userId}`);
 
@@ -559,15 +1068,9 @@ app.get('/users/me/stats', async (req, res) => {
 });
 
 // История заказов
-app.get('/users/me/orders', async (req, res) => {
+app.get('/users/me/orders', authenticate, async (req, res) => {
   try {
-    const userId = getUserIdFromToken(req);
-
-    if (!userId) {
-      return res.status(401).json({
-        error: 'Требуется авторизация'
-      });
-    }
+    const userId = req.userId;
 
     log(`📦 Запрос истории заказов для пользователя ${userId}`);
 
@@ -701,6 +1204,7 @@ async function startServer() {
       log(`📡 Порт: ${PORT}`);
       log(`🌐 Режим базы: ${isDatabaseConnected ? '✅ Подключена' : '⚠️ Мок-режим'}`);
       log(`🔧 NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+      log(`🔐 JWT используется: ${process.env.JWT_SECRET ? 'Да' : 'Нет (используется дефолтный)'}`);
 
       // Показываем URL для доступа
       if (process.env.RAILWAY_STATIC_URL) {
