@@ -1,0 +1,14 @@
+{
+  "name": "food-delivery-admin-bot",
+  "version": "1.0.0",
+  "description": "Telegram бот для управления меню",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "axios": "^1.5.0",
+    "dotenv": "^16.3.1"
+  }
+}

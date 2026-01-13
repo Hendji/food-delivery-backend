@@ -1,16 +1,13 @@
 {
   "name": "food-delivery-api",
-  "version": "1.0.0",
-  "description": "API для приложения доставки еды",
+  "version": "2.0.0",
+  "description": "Безопасный API для доставки еды с админ-панелью",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "railway": "node server.js"
+    "bot": "node admin-bot/bot.js"
   },
-  "keywords": ["food-delivery", "api", "nodejs", "authentication"],
-  "author": "Ваше Имя",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
@@ -18,12 +15,11 @@
     "pg": "^8.11.3",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "crypto": "^1.0.1"
+    "helmet": "^7.0.0",
+    "express-rate-limit": "^6.10.0",
+    "axios": "^1.5.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
-  },
-  "engines": {
-    "node": ">=16.0.0"
   }
 }

@@ -18,3 +18,9 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_verification_token ON users(email_verification_token);
 CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(password_reset_token);
+
+-- Создание администратора (пароль: admin123)
+INSERT INTO users (name, email, password_hash, role)
+VALUES
+    ('Администратор', 'admin@example.com', '$2a$10$YourHashedPasswordHere', 'admin')
+    ON CONFLICT (email) DO NOTHING;
